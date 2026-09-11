@@ -4,6 +4,8 @@
  * Changes handled:
  * - mbedtls_pk_parse_key: v3 has 7 args (includes f_rng, p_rng), v4 has 5 args
  * - mbedtls_pk_sign: v3 has 9 args (includes f_rng, p_rng), v4 has 7 args
+ * - mbedtls_pk_decrypt: forwards legacy signature to compatibility implementation
+ * - mbedtls_pk_info_t / mbedtls_pk_info_from_type: provides inline shim for legacy type lookup
  * - Exposes private types: mbedtls_pk_type_t, MBEDTLS_PK_RSA, MBEDTLS_PK_ECDSA, etc.
  * - Exposes private functions: mbedtls_pk_can_do, mbedtls_pk_get_type, mbedtls_pk_setup,
  *   mbedtls_pk_info_from_type, mbedtls_pk_rsa, mbedtls_pk_ec
@@ -25,6 +27,7 @@
 #ifndef MBEDTLS_PK_H
   #if defined(__has_include) && __has_include(<../../include/mbedtls/mbedtls/tf-psa-crypto/include/mbedtls/pk.h>)
     #include <../../include/mbedtls/mbedtls/tf-psa-crypto/include/mbedtls/pk.h>
+  #endif
 #endif
 
 /* Include the private pk header for legacy types like mbedtls_pk_type_t,
@@ -42,8 +45,11 @@
 /* Include ECP for mbedtls_ecp functions (ESP-IDF port exposes this) */
 #include "mbedtls/ecp.h"
 
-
-
+/*
+ * Inline shim for mbedtls_pk_info_from_type().
+ * Returns a non-NULL placeholder pointer to satisfy legacy callers
+ * checking pk_info against type in mbedTLS v4.
+ */
 #ifndef MBEDTLS_PK_INFO_FROM_TYPE_INLINE_DEFINED
 #define MBEDTLS_PK_INFO_FROM_TYPE_INLINE_DEFINED
 
@@ -121,6 +127,10 @@ static inline int mbedtls_pk_sign_v4_real(
 #define mbedtls_pk_sign(ctx, md_alg, hash, hash_len, sig, sig_size, sig_len, f_rng, p_rng) \
     mbedtls_pk_sign_v4_real(ctx, md_alg, hash, hash_len, sig, sig_size, sig_len)
 
+/*
+ * Macro that maps legacy mbedtls_pk_decrypt calls to the v3 compatibility wrapper.
+ * Keeps existing legacy code compatible with v4 signature changes.
+ */
 #ifdef mbedtls_pk_decrypt
 #undef mbedtls_pk_decrypt
 #endif
