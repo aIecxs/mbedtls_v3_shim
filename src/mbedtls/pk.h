@@ -4,7 +4,6 @@
  * Changes handled:
  * - mbedtls_pk_parse_key: v3 has 7 args (includes f_rng, p_rng), v4 has 5 args
  * - mbedtls_pk_sign: v3 has 9 args (includes f_rng, p_rng), v4 has 7 args
- * - mbedtls_pk_decrypt: v3 has 8 args (includes f_rng, p_rng), v4 has 6 args
  * - Exposes private types: mbedtls_pk_type_t, MBEDTLS_PK_RSA, MBEDTLS_PK_ECDSA, etc.
  * - Exposes private functions: mbedtls_pk_can_do, mbedtls_pk_get_type, mbedtls_pk_setup,
  *   mbedtls_pk_info_from_type, mbedtls_pk_rsa, mbedtls_pk_ec
@@ -41,6 +40,16 @@
 extern "C" {
 #endif
 
+int mbedtls_pk_decrypt_v3_compat(
+    mbedtls_pk_context *ctx,
+    const unsigned char *input,
+    size_t ilen,
+    unsigned char *output,
+    size_t *olen,
+    size_t osize,
+    int (*f_rng)(void *, unsigned char *, size_t),
+    void *p_rng);
+
 /*
  * Inline wrapper that calls the real v4 5-arg mbedtls_pk_parse_key().
  * Must be defined before the macro so the macro doesn't expand here.
@@ -65,18 +74,6 @@ static inline int mbedtls_pk_sign_v4_real(
     return mbedtls_pk_sign(ctx, md_alg, hash, hash_len, sig, sig_size, sig_len);
 }
 
-/*
- * Inline wrapper that calls the real v4 6-arg mbedtls_pk_decrypt().
- * Must be defined before the macro so the macro doesn't expand here.
- */
-static inline int mbedtls_pk_decrypt_v4_real(
-    mbedtls_pk_context *ctx,
-    const unsigned char *input, size_t ilen,
-    unsigned char *output, size_t *olen, size_t osize)
-{
-    return mbedtls_pk_decrypt(ctx, input, ilen, output, olen, osize);
-}
-
 #ifdef __cplusplus
 }
 #endif
@@ -98,18 +95,16 @@ static inline int mbedtls_pk_decrypt_v4_real(
 #define mbedtls_pk_sign(ctx, md_alg, hash, hash_len, sig, sig_size, sig_len, f_rng, p_rng) \
     mbedtls_pk_sign_v4_real(ctx, md_alg, hash, hash_len, sig, sig_size, sig_len)
 
-/*
- * Macro that accepts the legacy 8-arg signature for mbedtls_pk_decrypt
- * and discards f_rng, p_rng.
- * Old: mbedtls_pk_decrypt(ctx, input, ilen, output, olen, osize, f_rng, p_rng)
- * New: mbedtls_pk_decrypt(ctx, input, ilen, output, olen, osize)
- */
+#ifdef mbedtls_pk_decrypt
+#undef mbedtls_pk_decrypt
+#endif
+
 #define mbedtls_pk_decrypt(ctx, input, ilen, output, olen, osize, f_rng, p_rng) \
-    mbedtls_pk_decrypt_v4_real(ctx, input, ilen, output, olen, osize)
+    mbedtls_pk_decrypt_v3_compat( \
+        (ctx), (input), (ilen), (output), (olen), (osize), (f_rng), (p_rng))
 
 #if !defined(MBEDTLS_V3_SHIM_INTERNAL)
 #include "mbedtls_v3_shim/pk_rsa.h"
-#include "mbedtls_v3_shim/pk_rsa_ops.h"
 
 static inline size_t mbedtls_pk_get_bitlen_v4_compat(const mbedtls_pk_context *ctx)
 {
@@ -221,18 +216,4 @@ static inline int mbedtls_pk_verify_v4_compat(mbedtls_pk_context *ctx,
 #endif
 #define mbedtls_pk_verify(ctx, md_alg, hash, hash_len, sig, sig_len) \
     mbedtls_pk_verify_v4_compat(ctx, md_alg, hash, hash_len, sig, sig_len)
-
-/* RSA operations compatibility */
-#ifdef mbedtls_rsa_set_padding
-#undef mbedtls_rsa_set_padding
-#endif
-#define mbedtls_rsa_set_padding(ctx, padding, hash_id) \
-    mbedtls_v3_shim_rsa_set_padding(ctx, padding, hash_id)
-
-#ifdef mbedtls_rsa_gen_key
-#undef mbedtls_rsa_gen_key
-#endif
-#define mbedtls_rsa_gen_key(ctx, f_rng, p_rng, nbits, exponent) \
-    mbedtls_v3_shim_rsa_gen_key(ctx, f_rng, p_rng, nbits, exponent)
-
 #endif /* !MBEDTLS_V3_SHIM_INTERNAL */

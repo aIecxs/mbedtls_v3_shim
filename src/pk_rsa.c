@@ -8,6 +8,7 @@
 
 #define MBEDTLS_V3_SHIM_INTERNAL
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "mbedtls/build_info.h"
@@ -25,6 +26,134 @@
 
 #include "mbedtls_v3_shim/pk_ec.h"
 #include "mbedtls_v3_shim/pk_rsa.h"
+
+#define PK_DECRYPT_DER_BUFFER_SIZE 4096
+
+
+static int pk_decrypt_psa_error(psa_status_t status)
+{
+    return (status == PSA_SUCCESS) ? 0 : -1;
+}
+
+
+static psa_status_t pk_decrypt_import_rsa_key(
+    mbedtls_pk_context *ctx,
+    psa_key_id_t *key_id,
+    unsigned char **der_allocated)
+{
+    unsigned char *der;
+    int der_len;
+    psa_key_attributes_t attributes;
+    psa_status_t status;
+
+    if (ctx == NULL || key_id == NULL || der_allocated == NULL) {
+        return PSA_ERROR_INVALID_ARGUMENT;
+    }
+
+    *key_id = PSA_KEY_ID_NULL;
+    *der_allocated = NULL;
+
+    der = (unsigned char *) malloc(PK_DECRYPT_DER_BUFFER_SIZE);
+    if (der == NULL) {
+        return PSA_ERROR_INSUFFICIENT_MEMORY;
+    }
+
+    der_len = mbedtls_pk_write_key_der(
+        ctx,
+        der,
+        PK_DECRYPT_DER_BUFFER_SIZE
+    );
+
+    if (der_len <= 0 || (size_t) der_len > PK_DECRYPT_DER_BUFFER_SIZE) {
+        free(der);
+        return PSA_ERROR_DATA_INVALID;
+    }
+
+    attributes = psa_key_attributes_init();
+
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_RSA_KEY_PAIR);
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_DECRYPT);
+    psa_set_key_algorithm(&attributes, PSA_ALG_RSA_PKCS1V15_CRYPT);
+
+    status = psa_import_key(
+        &attributes,
+        der + PK_DECRYPT_DER_BUFFER_SIZE - der_len,
+        (size_t) der_len,
+        key_id
+    );
+
+    psa_reset_key_attributes(&attributes);
+
+    if (status != PSA_SUCCESS) {
+        free(der);
+        return status;
+    }
+
+    *der_allocated = der;
+    return PSA_SUCCESS;
+}
+
+
+int mbedtls_pk_decrypt_v3_compat(
+    mbedtls_pk_context *ctx,
+    const unsigned char *input,
+    size_t ilen,
+    unsigned char *output,
+    size_t *olen,
+    size_t osize,
+    int (*f_rng)(void *, unsigned char *, size_t),
+    void *p_rng)
+{
+    psa_key_id_t key_id = PSA_KEY_ID_NULL;
+    unsigned char *der = NULL;
+    psa_status_t status;
+
+    (void) f_rng;
+    (void) p_rng;
+
+    if (ctx == NULL || input == NULL || output == NULL || olen == NULL) {
+        return -1;
+    }
+
+    *olen = 0;
+
+    status = psa_crypto_init();
+    if (status != PSA_SUCCESS) {
+        return pk_decrypt_psa_error(status);
+    }
+
+    if (mbedtls_pk_get_type(ctx) != MBEDTLS_PK_RSA) {
+        return -1;
+    }
+
+    status = pk_decrypt_import_rsa_key(ctx, &key_id, &der);
+    if (status != PSA_SUCCESS) {
+        return pk_decrypt_psa_error(status);
+    }
+
+    status = psa_asymmetric_decrypt(
+        key_id,
+        PSA_ALG_RSA_PKCS1V15_CRYPT,
+        input,
+        ilen,
+        NULL,
+        0,
+        output,
+        osize,
+        olen
+    );
+
+    if (key_id != PSA_KEY_ID_NULL) {
+        psa_status_t destroy_status = psa_destroy_key(key_id);
+        if (status == PSA_SUCCESS && destroy_status != PSA_SUCCESS) {
+            status = destroy_status;
+        }
+    }
+
+    free(der);
+
+    return pk_decrypt_psa_error(status);
+}
 
 typedef struct mbedtls_v3_shim_pk_rsa_entry {
     mbedtls_pk_context *pk;
