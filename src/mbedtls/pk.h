@@ -6,6 +6,7 @@
  * - mbedtls_pk_sign: v3 has 9 args (includes f_rng, p_rng), v4 has 7 args
  * - mbedtls_pk_decrypt: forwards legacy signature to compatibility implementation
  * - mbedtls_pk_info_t / mbedtls_pk_info_from_type: provides inline shim for legacy type lookup
+ * - mbedtls_pk_setup: intercepted to safely map dummy info pointers to valid v4 contexts
  * - Exposes private types: mbedtls_pk_type_t, MBEDTLS_PK_RSA, MBEDTLS_PK_ECDSA, etc.
  * - Exposes private functions: mbedtls_pk_can_do, mbedtls_pk_get_type, mbedtls_pk_setup,
  *   mbedtls_pk_info_from_type, mbedtls_pk_rsa, mbedtls_pk_ec
@@ -81,6 +82,10 @@ int mbedtls_pk_decrypt_v3_compat(
     size_t osize,
     int (*f_rng)(void *, unsigned char *, size_t),
     void *p_rng);
+
+int mbedtls_v3_shim_pk_setup(
+    mbedtls_pk_context *ctx,
+    const mbedtls_pk_info_t *info);
 
 /*
  * Inline wrapper that calls the real v4 5-arg mbedtls_pk_parse_key().

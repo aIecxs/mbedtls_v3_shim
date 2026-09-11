@@ -521,6 +521,26 @@ void mbedtls_v3_shim_pk_free(mbedtls_pk_context *ctx)
 int mbedtls_v3_shim_pk_setup(mbedtls_pk_context *ctx,
                              const mbedtls_pk_info_t *info)
 {
+    if (ctx == NULL) {
+        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+    }
+
+    // Check if the caller supplied the dummy v3 compatibility pointer
+    if (info == (const mbedtls_pk_info_t *)1) {
+        // Temporarily bypass macro definition to fetch the real 
+        // underlying v4 info struct mapping out of the core crypto stack
+        #undef mbedtls_pk_info_from_type
+        const mbedtls_pk_info_t *real_v4_info = mbedtls_pk_info_from_type(MBEDTLS_PK_RSA);
+        
+        // Re-establish macro expansion context immediately
+        #define mbedtls_pk_info_from_type(pk_type) mbedtls_pk_info_from_type_shim(pk_type)
+
+        if (real_v4_info != NULL && real_v4_info != (const mbedtls_pk_info_t *)1) {
+            info = real_v4_info;
+        }
+    }
+
+    // Execute the real core setup routine using a valid v4 structural descriptor
     int ret = mbedtls_pk_setup(ctx, info);
 
     if (ret == 0 && mbedtls_pk_get_type(ctx) == MBEDTLS_PK_RSA) {
