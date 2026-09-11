@@ -21,6 +21,12 @@
 /* Include the real pk.h first to get the public types and functions */
 #include_next "mbedtls/pk.h"
 
+/* fallback arduino: hardcoded path to the real pk.h */
+#ifndef MBEDTLS_PK_H
+  #if defined(__has_include) && __has_include(<../../include/mbedtls/mbedtls/tf-psa-crypto/include/mbedtls/pk.h>)
+    #include <../../include/mbedtls/mbedtls/tf-psa-crypto/include/mbedtls/pk.h>
+#endif
+
 /* Include the private pk header for legacy types like mbedtls_pk_type_t,
  * MBEDTLS_PK_RSA, mbedtls_pk_can_do, mbedtls_pk_get_type, etc. */
 #include "mbedtls/private/pk_private.h"
@@ -35,6 +41,26 @@
 
 /* Include ECP for mbedtls_ecp functions (ESP-IDF port exposes this) */
 #include "mbedtls/ecp.h"
+
+
+
+#ifndef MBEDTLS_PK_INFO_FROM_TYPE_INLINE_DEFINED
+#define MBEDTLS_PK_INFO_FROM_TYPE_INLINE_DEFINED
+
+static inline const mbedtls_pk_info_t *mbedtls_pk_info_from_type_shim(mbedtls_pk_type_t pk_type)
+{
+    (void)pk_type;
+    return (const mbedtls_pk_info_t *)1;
+}
+
+#ifdef mbedtls_pk_info_from_type
+#undef mbedtls_pk_info_from_type
+#endif
+
+#define mbedtls_pk_info_from_type(pk_type) mbedtls_pk_info_from_type_shim(pk_type)
+
+#endif /* MBEDTLS_PK_INFO_FROM_TYPE_INLINE_DEFINED */
+
 
 #ifdef __cplusplus
 extern "C" {

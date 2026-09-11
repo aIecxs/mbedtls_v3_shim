@@ -27,6 +27,12 @@
 #include "mbedtls_v3_shim/pk_ec.h"
 #include "mbedtls_v3_shim/pk_rsa.h"
 
+
+/* Forward declaration in case mbedtls_pk_write_key_der is not exposed in pk.h */
+int mbedtls_pk_write_key_der(const mbedtls_pk_context *ctx,
+                             unsigned char *buf,
+                             size_t size);
+
 #define PK_DECRYPT_DER_BUFFER_SIZE 4096
 
 
