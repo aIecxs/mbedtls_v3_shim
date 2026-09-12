@@ -12,6 +12,7 @@
 #define MBEDTLS_V3_SHIM_INTERNAL
 
 #include "mbedtls/build_info.h"
+#include <string.h> 
 
 #if defined(MBEDTLS_RSA_C)
 
@@ -20,6 +21,7 @@
 #include "mbedtls/private/error_common.h"
 #include "mbedtls/rsa.h"
 #include "mbedtls_v3_shim/pk_rsa.h"
+#include "mbedtls/asn1write.h"
 
 #include <stdint.h>
 
@@ -429,4 +431,35 @@ int mbedtls_rsa_export_crt(const mbedtls_rsa_context *ctx,
     return 0;
 }
 
+int mbedtls_rsa_write_key_der(const mbedtls_rsa_context *rsa, 
+                              unsigned char *buf, size_t size)
+{
+    int ret = 0;
+    unsigned char *p = buf + size;
+    size_t len = 0;
+
+    /* RSA private keys are serialized as a sequence of 9 fields:
+     * Version (0), N, E, D, P, Q, DP, DQ, QP 
+     */
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, &rsa->MBEDTLS_PRIVATE(QP)));
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, &rsa->MBEDTLS_PRIVATE(DQ)));
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, &rsa->MBEDTLS_PRIVATE(DP)));
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, &rsa->MBEDTLS_PRIVATE(Q)));
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, &rsa->MBEDTLS_PRIVATE(P)));
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, &rsa->MBEDTLS_PRIVATE(D)));
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, &rsa->MBEDTLS_PRIVATE(E)));
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&p, buf, &rsa->MBEDTLS_PRIVATE(N)));
+    
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(&p, buf, 0)); /* Version 0 */
+    
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(&p, buf, len));
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(&p, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+
+    /* The data is written backwards from the end of the buffer. 
+     * Shift it to the beginning of the buffer.
+     */
+    memmove(buf, p, len);
+
+    return (int) len;
+}
 #endif /* MBEDTLS_RSA_C */

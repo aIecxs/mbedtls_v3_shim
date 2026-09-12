@@ -87,6 +87,31 @@ int mbedtls_v3_shim_pk_setup(
     mbedtls_pk_context *ctx,
     const mbedtls_pk_info_t *info);
 
+int mbedtls_v3_shim_pk_write_key_der(
+    const mbedtls_pk_context *ctx, 
+    unsigned char *buf, 
+    size_t size);
+
+#if defined(MBEDTLS_PK_WRITE_C) && defined(MBEDTLS_PEM_WRITE_C)
+int mbedtls_v3_shim_pk_write_key_pem(
+    const mbedtls_pk_context *ctx, 
+    unsigned char *buf, 
+    size_t size);
+#endif
+
+int mbedtls_v3_shim_pk_write_pubkey_der(
+    const mbedtls_pk_context *ctx, 
+    unsigned char *buf, 
+    size_t size);
+
+#if defined(MBEDTLS_PK_WRITE_C) && defined(MBEDTLS_PEM_WRITE_C)
+int mbedtls_v3_shim_pk_write_pubkey_pem(
+    const mbedtls_pk_context *ctx, 
+    unsigned char *buf, 
+    size_t size);
+#endif
+
+
 /*
  * Inline wrapper that calls the real v4 5-arg mbedtls_pk_parse_key().
  * Must be defined before the macro so the macro doesn't expand here.
@@ -257,4 +282,32 @@ static inline int mbedtls_pk_verify_v4_compat(mbedtls_pk_context *ctx,
 #endif
 #define mbedtls_pk_verify(ctx, md_alg, hash, hash_len, sig, sig_len) \
     mbedtls_pk_verify_v4_compat(ctx, md_alg, hash, hash_len, sig, sig_len)
+
+#ifdef mbedtls_pk_write_key_der
+#undef mbedtls_pk_write_key_der
+#endif
+#define mbedtls_pk_write_key_der(ctx, buf, size) \
+    mbedtls_v3_shim_pk_write_key_der((ctx), (buf), (size))
+
+#if defined(MBEDTLS_PK_WRITE_C) && defined(MBEDTLS_PEM_WRITE_C)
+#ifdef mbedtls_pk_write_key_pem
+#undef mbedtls_pk_write_key_pem
+#endif
+#define mbedtls_pk_write_key_pem(ctx, buf, size) \
+    mbedtls_v3_shim_pk_write_key_pem((ctx), (buf), (size))
+#endif
+
+#ifdef mbedtls_pk_write_pubkey_der
+#undef mbedtls_pk_write_pubkey_der
+#endif
+#define mbedtls_pk_write_pubkey_der(ctx, buf, size) \
+    mbedtls_v3_shim_pk_write_pubkey_der((ctx), (buf), (size))
+
+#ifdef mbedtls_pk_write_pubkey_pem
+#undef mbedtls_pk_write_pubkey_pem
+#endif
+#define mbedtls_pk_write_pubkey_pem(ctx, buf, size) \
+    mbedtls_v3_shim_pk_write_pubkey_pem((ctx), (buf), (size))
+
+
 #endif /* !MBEDTLS_V3_SHIM_INTERNAL */

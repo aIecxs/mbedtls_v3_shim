@@ -552,3 +552,112 @@ int mbedtls_v3_shim_pk_setup(mbedtls_pk_context *ctx,
 
     return ret;
 }
+
+// Forward declaration of shimmed key exporter
+int mbedtls_rsa_write_key_der(const mbedtls_rsa_context *rsa, 
+                              unsigned char *buf, size_t size);
+
+int mbedtls_v3_shim_pk_write_key_der(const mbedtls_pk_context *ctx, 
+                                     unsigned char *buf, size_t size)
+{
+    if (ctx == NULL) {
+        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+    }
+
+    // If it's an RSA key and we have a materialized context, write from that
+    if (mbedtls_pk_get_type(ctx) == MBEDTLS_PK_RSA) {
+        mbedtls_v3_shim_pk_rsa_entry *entry = cache_find((mbedtls_pk_context *)ctx);
+        if (entry != NULL && entry->rsa != NULL) {
+            return mbedtls_rsa_write_key_der(entry->rsa, buf, size);
+        }
+    }
+
+    // Otherwise, fall back to native core lookup behavior
+    #undef mbedtls_pk_write_key_der
+    int ret = mbedtls_pk_write_key_der(ctx, buf, size);
+    #define mbedtls_pk_write_key_der(ctx, buf, size) mbedtls_v3_shim_pk_write_key_der((ctx), (buf), (size))
+    return ret;
+}
+
+#if defined(MBEDTLS_PK_WRITE_C) && defined(MBEDTLS_PEM_WRITE_C)
+#include "mbedtls/pem.h"
+
+int mbedtls_v3_shim_pk_write_key_pem(const mbedtls_pk_context *ctx, 
+                                     unsigned char *buf, size_t size)
+{
+    size_t olene = 0;
+    unsigned char der_buf[4096];
+    
+    // Convert the cached context fields into raw DER bytes first
+    int ret = mbedtls_v3_shim_pk_write_key_der(ctx, der_buf, sizeof(der_buf));
+    if (ret < 0) {
+        return ret;
+    }
+
+    size_t der_len = (size_t)ret;
+    unsigned char *der_start = der_buf + sizeof(der_buf) - der_len;
+
+    // Wrap the output into a standard legacy PEM armor layout block
+    ret = mbedtls_pem_write_buffer("-----BEGIN RSA PRIVATE KEY-----\n",
+                                   "-----END RSA PRIVATE KEY-----\n",
+                                   der_start, der_len, buf, size, &olene);
+    if (ret != 0) {
+        return ret;
+    }
+
+    return 0;
+}
+#endif
+
+/* 
+ * Public key synchronization and export hooks for the shim layer
+ */
+
+int mbedtls_v3_shim_pk_write_pubkey_der(const mbedtls_pk_context *ctx, 
+                                        unsigned char *buf, size_t size)
+{
+    if (ctx == NULL) {
+        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+    }
+
+    if (mbedtls_pk_get_type(ctx) == MBEDTLS_PK_RSA) {
+        mbedtls_v3_shim_pk_rsa_entry *entry = cache_find((mbedtls_pk_context *)ctx);
+        if (entry != NULL && entry->rsa != NULL) {
+            /* Force clear internal length guard so sync can update fields seamlessly */
+            ((mbedtls_pk_context *)ctx)->MBEDTLS_PRIVATE(pub_raw_len) = 0;
+            
+            /* Synchronize N and E into the native v4 pub_raw buffer array */
+            pk_sync_pubkey_raw_from_rsa((mbedtls_pk_context *)ctx, entry->rsa);
+        }
+    }
+
+    /* Pass execution safely back down into the native core v4 engine */
+    #undef mbedtls_pk_write_pubkey_der
+    int ret = mbedtls_pk_write_pubkey_der(ctx, buf, size);
+    #define mbedtls_pk_write_pubkey_der(ctx, buf, size) mbedtls_v3_shim_pk_write_pubkey_der((ctx), (buf), (size))
+    return ret;
+}
+
+#if defined(MBEDTLS_PK_WRITE_C) && defined(MBEDTLS_PEM_WRITE_C)
+int mbedtls_v3_shim_pk_write_pubkey_pem(const mbedtls_pk_context *ctx, 
+                                        unsigned char *buf, size_t size)
+{
+    if (ctx == NULL) {
+        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+    }
+
+    /* Sync key matrices before attempting native public PEM transformation layouts */
+    if (mbedtls_pk_get_type(ctx) == MBEDTLS_PK_RSA) {
+        mbedtls_v3_shim_pk_rsa_entry *entry = cache_find((mbedtls_pk_context *)ctx);
+        if (entry != NULL && entry->rsa != NULL) {
+            ((mbedtls_pk_context *)ctx)->MBEDTLS_PRIVATE(pub_raw_len) = 0;
+            pk_sync_pubkey_raw_from_rsa((mbedtls_pk_context *)ctx, entry->rsa);
+        }
+    }
+
+    #undef mbedtls_pk_write_pubkey_pem
+    int ret = mbedtls_pk_write_pubkey_pem(ctx, buf, size);
+    #define mbedtls_pk_write_pubkey_pem(ctx, buf, size) mbedtls_v3_shim_pk_write_pubkey_pem((ctx), (buf), (size))
+    return ret;
+}
+#endif
