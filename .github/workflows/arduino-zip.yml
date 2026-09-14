@@ -40,6 +40,25 @@ jobs:
           # Remove the original include directory.
           find "$destdir/include" -delete
 
+          # dummy header
+          [ -f "$destdir/src/mbedtls_v3_shim.h" ] || \
+          printf '%s\n' '#pragma once' > "$destdir/src/mbedtls_v3_shim.h"
+
+          # arduino info
+          [ -f "$destdir/library.properties" ] || \
+          printf '%s\n' \
+          'name=mbedtls_v3_shim' \
+          'version=0.1.4' \
+          'author=David Cermak' \
+          'maintainer=David Cermak' \
+          'sentence=mbedTLS v3 compatibility shim for ESP-IDF v6+ (mbedTLS v4 / PSA)' \
+          'paragraph=Allows legacy code written for mbedTLS v3 to compile against mbedTLS v4 on Arduino Core v4.x' \
+          'category=Other' \
+          'url=https://github.com/david-cermak/mbedtls_v3_shim' \
+          'architectures=esp32' \
+          'includes=mbedtls_v3_shim.h' \
+          > "$destdir/library.properties"
+
           # Create the ZIP.
           cd site/package
           zip -r "../${destdir##*/}.zip" "${destdir##*/}"
