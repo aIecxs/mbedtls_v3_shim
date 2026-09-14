@@ -26,10 +26,13 @@
 
 /* fallback arduino: hardcoded path to the real pk.h */
 #ifndef MBEDTLS_PK_H
-  #if defined(__has_include) && __has_include(<../../include/mbedtls/mbedtls/tf-psa-crypto/include/mbedtls/pk.h>)
-    #include <../../include/mbedtls/mbedtls/tf-psa-crypto/include/mbedtls/pk.h>
-  #endif
+#ifndef MBEDTLS_V3_SHIM_REAL_PK_H
+#define MBEDTLS_V3_SHIM_REAL_PK_H <../../include/mbedtls/mbedtls/tf-psa-crypto/include/mbedtls/pk.h>
 #endif
+#if defined(__has_include) && __has_include(MBEDTLS_V3_SHIM_REAL_PK_H)
+#include MBEDTLS_V3_SHIM_REAL_PK_H
+#endif
+#endif /* !MBEDTLS_PK_H */
 
 /* Include the private pk header for legacy types like mbedtls_pk_type_t,
  * MBEDTLS_PK_RSA, mbedtls_pk_can_do, mbedtls_pk_get_type, etc. */
@@ -46,71 +49,13 @@
 /* Include ECP for mbedtls_ecp functions (ESP-IDF port exposes this) */
 #include "mbedtls/ecp.h"
 
-/*
- * Inline shim for mbedtls_pk_info_from_type().
- * Returns a non-NULL placeholder pointer to satisfy legacy callers
- * checking pk_info against type in mbedTLS v4.
- */
-#ifndef MBEDTLS_PK_INFO_FROM_TYPE_INLINE_DEFINED
-#define MBEDTLS_PK_INFO_FROM_TYPE_INLINE_DEFINED
-
-static inline const mbedtls_pk_info_t *mbedtls_pk_info_from_type_shim(mbedtls_pk_type_t pk_type)
-{
-    (void)pk_type;
-    return (const mbedtls_pk_info_t *)1;
-}
-
-#ifdef mbedtls_pk_info_from_type
-#undef mbedtls_pk_info_from_type
+#if !defined(MBEDTLS_V3_SHIM_INTERNAL)
+#include "mbedtls_v3_shim/pk_rsa.h"
 #endif
-
-#define mbedtls_pk_info_from_type(pk_type) mbedtls_pk_info_from_type_shim(pk_type)
-
-#endif /* MBEDTLS_PK_INFO_FROM_TYPE_INLINE_DEFINED */
-
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-int mbedtls_pk_decrypt_v3_compat(
-    mbedtls_pk_context *ctx,
-    const unsigned char *input,
-    size_t ilen,
-    unsigned char *output,
-    size_t *olen,
-    size_t osize,
-    int (*f_rng)(void *, unsigned char *, size_t),
-    void *p_rng);
-
-int mbedtls_v3_shim_pk_setup(
-    mbedtls_pk_context *ctx,
-    const mbedtls_pk_info_t *info);
-
-int mbedtls_v3_shim_pk_write_key_der(
-    const mbedtls_pk_context *ctx, 
-    unsigned char *buf, 
-    size_t size);
-
-#if defined(MBEDTLS_PK_WRITE_C) && defined(MBEDTLS_PEM_WRITE_C)
-int mbedtls_v3_shim_pk_write_key_pem(
-    const mbedtls_pk_context *ctx, 
-    unsigned char *buf, 
-    size_t size);
-#endif
-
-int mbedtls_v3_shim_pk_write_pubkey_der(
-    const mbedtls_pk_context *ctx, 
-    unsigned char *buf, 
-    size_t size);
-
-#if defined(MBEDTLS_PK_WRITE_C) && defined(MBEDTLS_PEM_WRITE_C)
-int mbedtls_v3_shim_pk_write_pubkey_pem(
-    const mbedtls_pk_context *ctx, 
-    unsigned char *buf, 
-    size_t size);
-#endif
-
 
 /*
  * Inline wrapper that calls the real v4 5-arg mbedtls_pk_parse_key().
@@ -157,20 +102,72 @@ static inline int mbedtls_pk_sign_v4_real(
 #define mbedtls_pk_sign(ctx, md_alg, hash, hash_len, sig, sig_size, sig_len, f_rng, p_rng) \
     mbedtls_pk_sign_v4_real(ctx, md_alg, hash, hash_len, sig, sig_size, sig_len)
 
+#if !defined(MBEDTLS_V3_SHIM_INTERNAL)
 /*
- * Macro that maps legacy mbedtls_pk_decrypt calls to the v3 compatibility wrapper.
- * Keeps existing legacy code compatible with v4 signature changes.
+ * Macro that accepts the legacy 8-arg signature for mbedtls_pk_decrypt.
+ * v4 dropped pk-layer decrypt entirely; mbedtls_pk_decrypt_v4_compat()
+ * (see 5. Lazy RSA materialization in pk_rsa.c) runs it through the real
+ * legacy mbedtls_rsa_pkcs1_decrypt() on a materialized RSA context, not PSA.
  */
 #ifdef mbedtls_pk_decrypt
 #undef mbedtls_pk_decrypt
 #endif
-
 #define mbedtls_pk_decrypt(ctx, input, ilen, output, olen, osize, f_rng, p_rng) \
-    mbedtls_pk_decrypt_v3_compat( \
+    mbedtls_pk_decrypt_v4_compat( \
         (ctx), (input), (ilen), (output), (olen), (osize), (f_rng), (p_rng))
 
+/*
+ * Macro that accepts the legacy 8-arg signature for mbedtls_pk_encrypt.
+ * Same rationale as mbedtls_pk_decrypt above: mbedtls_pk_encrypt_v4_compat()
+ * runs it through the real legacy mbedtls_rsa_pkcs1_encrypt(), not PSA.
+ */
+#ifdef mbedtls_pk_encrypt
+#undef mbedtls_pk_encrypt
+#endif
+#define mbedtls_pk_encrypt(ctx, input, ilen, output, olen, osize, f_rng, p_rng) \
+    mbedtls_pk_encrypt_v4_compat( \
+        (ctx), (input), (ilen), (output), (olen), (osize), (f_rng), (p_rng))
+
+/*
+ * Legacy type aliases for code compiled against mbedTLS v3 headers.
+ * Do not apply inside the shim itself: v4 still has distinct enum values
+ * at runtime (e.g. ECKEY vs ECKEY_DH) and switch/case needs the real names.
+ */
+#ifndef MBEDTLS_PK_RSA_ALT
+#define MBEDTLS_PK_RSA_ALT MBEDTLS_PK_NONE  /* RSA_ALT was removed in v4 */
+#endif
+
+#ifndef MBEDTLS_PK_ECKEY_DH
+#define MBEDTLS_PK_ECKEY_DH MBEDTLS_PK_ECKEY  /* DH is now part of ECKEY */
+#endif
+#endif /* !MBEDTLS_V3_SHIM_INTERNAL */
+
 #if !defined(MBEDTLS_V3_SHIM_INTERNAL)
-#include "mbedtls_v3_shim/pk_rsa.h"
+/*
+ * ---- 4. PSA-Backed Stubs ----
+ * v4's pk_info table doesn't cover every legacy type, so legacy code that
+ * does `if (mbedtls_pk_info_from_type(type) != NULL)` before mbedtls_pk_setup()
+ * would otherwise see a false negative. Hand back a dummy non-NULL pointer;
+ * mbedtls_v3_shim_pk_setup() (5. Lazy RSA materialization) recognizes it and
+ * substitutes the real v4 info struct before calling the real pk_setup.
+ */
+static inline const mbedtls_pk_info_t *mbedtls_pk_info_from_type_v4_compat(mbedtls_pk_type_t pk_type)
+{
+    (void) pk_type;
+    return MBEDTLS_V3_SHIM_PK_INFO_DUMMY;
+}
+
+#ifdef mbedtls_pk_info_from_type
+#undef mbedtls_pk_info_from_type
+#endif
+#define mbedtls_pk_info_from_type(pk_type) mbedtls_pk_info_from_type_v4_compat(pk_type)
+#endif /* !MBEDTLS_V3_SHIM_INTERNAL */
+
+#if !defined(MBEDTLS_V3_SHIM_INTERNAL)
+/*
+ * ---- 5. Lazy RSA materialization ----
+ */
+#include "mbedtls_v3_shim/pk_ec.h"
 
 static inline size_t mbedtls_pk_get_bitlen_v4_compat(const mbedtls_pk_context *ctx)
 {
@@ -227,25 +224,6 @@ static inline int mbedtls_pk_verify_v4_compat(mbedtls_pk_context *ctx,
 
     return mbedtls_pk_verify_v4_real(ctx, md_alg, hash, hash_len, sig, sig_len);
 }
-#endif /* !MBEDTLS_V3_SHIM_INTERNAL */
-
-#if !defined(MBEDTLS_V3_SHIM_INTERNAL)
-/*
- * Legacy type aliases for code compiled against mbedTLS v3 headers.
- * Do not apply inside the shim itself: v4 still has distinct enum values
- * at runtime (e.g. ECKEY vs ECKEY_DH) and switch/case needs the real names.
- */
-#ifndef MBEDTLS_PK_RSA_ALT
-#define MBEDTLS_PK_RSA_ALT MBEDTLS_PK_NONE  /* RSA_ALT was removed in v4 */
-#endif
-
-#ifndef MBEDTLS_PK_ECKEY_DH
-#define MBEDTLS_PK_ECKEY_DH MBEDTLS_PK_ECKEY  /* DH is now part of ECKEY */
-#endif
-#endif /* !MBEDTLS_V3_SHIM_INTERNAL */
-
-#if !defined(MBEDTLS_V3_SHIM_INTERNAL)
-#include "mbedtls_v3_shim/pk_ec.h"
 
 /*
  * Legacy mbedtls_pk_rsa() took the PK context by value and returned pk_ctx.
@@ -283,19 +261,16 @@ static inline int mbedtls_pk_verify_v4_compat(mbedtls_pk_context *ctx,
 #define mbedtls_pk_verify(ctx, md_alg, hash, hash_len, sig, sig_len) \
     mbedtls_pk_verify_v4_compat(ctx, md_alg, hash, hash_len, sig, sig_len)
 
+/*
+ * mbedtls_pk_write_key_der/_pem and mbedtls_pk_write_pubkey_der/_pem: route
+ * through the shim so a materialized RSA context (see pk_rsa.c) is written
+ * back out instead of the empty PSA-backed pk_context.
+ */
 #ifdef mbedtls_pk_write_key_der
 #undef mbedtls_pk_write_key_der
 #endif
 #define mbedtls_pk_write_key_der(ctx, buf, size) \
     mbedtls_v3_shim_pk_write_key_der((ctx), (buf), (size))
-
-#if defined(MBEDTLS_PK_WRITE_C) && defined(MBEDTLS_PEM_WRITE_C)
-#ifdef mbedtls_pk_write_key_pem
-#undef mbedtls_pk_write_key_pem
-#endif
-#define mbedtls_pk_write_key_pem(ctx, buf, size) \
-    mbedtls_v3_shim_pk_write_key_pem((ctx), (buf), (size))
-#endif
 
 #ifdef mbedtls_pk_write_pubkey_der
 #undef mbedtls_pk_write_pubkey_der
@@ -303,11 +278,18 @@ static inline int mbedtls_pk_verify_v4_compat(mbedtls_pk_context *ctx,
 #define mbedtls_pk_write_pubkey_der(ctx, buf, size) \
     mbedtls_v3_shim_pk_write_pubkey_der((ctx), (buf), (size))
 
+#if defined(MBEDTLS_PK_WRITE_C) && defined(MBEDTLS_PEM_WRITE_C)
+#ifdef mbedtls_pk_write_key_pem
+#undef mbedtls_pk_write_key_pem
+#endif
+#define mbedtls_pk_write_key_pem(ctx, buf, size) \
+    mbedtls_v3_shim_pk_write_key_pem((ctx), (buf), (size))
+
 #ifdef mbedtls_pk_write_pubkey_pem
 #undef mbedtls_pk_write_pubkey_pem
 #endif
 #define mbedtls_pk_write_pubkey_pem(ctx, buf, size) \
     mbedtls_v3_shim_pk_write_pubkey_pem((ctx), (buf), (size))
-
+#endif /* MBEDTLS_PK_WRITE_C && MBEDTLS_PEM_WRITE_C */
 
 #endif /* !MBEDTLS_V3_SHIM_INTERNAL */

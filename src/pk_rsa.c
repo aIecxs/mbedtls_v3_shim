@@ -8,7 +8,6 @@
 
 #define MBEDTLS_V3_SHIM_INTERNAL
 
-#include <stdlib.h>
 #include <string.h>
 
 #include "mbedtls/build_info.h"
@@ -27,139 +26,19 @@
 #include "mbedtls_v3_shim/pk_ec.h"
 #include "mbedtls_v3_shim/pk_rsa.h"
 
-
 /* Forward declaration in case mbedtls_pk_write_key_der is not exposed in pk.h */
-int mbedtls_pk_write_key_der(const mbedtls_pk_context *ctx,
-                             unsigned char *buf,
-                             size_t size);
+int mbedtls_rsa_parse_key(mbedtls_rsa_context *rsa,
+                          const unsigned char *key,
+                          size_t keylen);
+int mbedtls_rsa_write_pubkey(const mbedtls_rsa_context *rsa,
+                             unsigned char *start,
+                             unsigned char **p);
 
-#define PK_DECRYPT_DER_BUFFER_SIZE 4096
-
-
-static int pk_decrypt_psa_error(psa_status_t status)
-{
-    return (status == PSA_SUCCESS) ? 0 : -1;
-}
-
-
-static psa_status_t pk_decrypt_import_rsa_key(
-    mbedtls_pk_context *ctx,
-    psa_key_id_t *key_id,
-    unsigned char **der_allocated)
-{
-    unsigned char *der;
-    int der_len;
-    psa_key_attributes_t attributes;
-    psa_status_t status;
-
-    if (ctx == NULL || key_id == NULL || der_allocated == NULL) {
-        return PSA_ERROR_INVALID_ARGUMENT;
-    }
-
-    *key_id = PSA_KEY_ID_NULL;
-    *der_allocated = NULL;
-
-    der = (unsigned char *) malloc(PK_DECRYPT_DER_BUFFER_SIZE);
-    if (der == NULL) {
-        return PSA_ERROR_INSUFFICIENT_MEMORY;
-    }
-
-    der_len = mbedtls_pk_write_key_der(
-        ctx,
-        der,
-        PK_DECRYPT_DER_BUFFER_SIZE
-    );
-
-    if (der_len <= 0 || (size_t) der_len > PK_DECRYPT_DER_BUFFER_SIZE) {
-        free(der);
-        return PSA_ERROR_DATA_INVALID;
-    }
-
-    attributes = psa_key_attributes_init();
-
-    psa_set_key_type(&attributes, PSA_KEY_TYPE_RSA_KEY_PAIR);
-    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_DECRYPT);
-    psa_set_key_algorithm(&attributes, PSA_ALG_RSA_PKCS1V15_CRYPT);
-
-    status = psa_import_key(
-        &attributes,
-        der + PK_DECRYPT_DER_BUFFER_SIZE - der_len,
-        (size_t) der_len,
-        key_id
-    );
-
-    psa_reset_key_attributes(&attributes);
-
-    if (status != PSA_SUCCESS) {
-        free(der);
-        return status;
-    }
-
-    *der_allocated = der;
-    return PSA_SUCCESS;
-}
-
-
-int mbedtls_pk_decrypt_v3_compat(
-    mbedtls_pk_context *ctx,
-    const unsigned char *input,
-    size_t ilen,
-    unsigned char *output,
-    size_t *olen,
-    size_t osize,
-    int (*f_rng)(void *, unsigned char *, size_t),
-    void *p_rng)
-{
-    psa_key_id_t key_id = PSA_KEY_ID_NULL;
-    unsigned char *der = NULL;
-    psa_status_t status;
-
-    (void) f_rng;
-    (void) p_rng;
-
-    if (ctx == NULL || input == NULL || output == NULL || olen == NULL) {
-        return -1;
-    }
-
-    *olen = 0;
-
-    status = psa_crypto_init();
-    if (status != PSA_SUCCESS) {
-        return pk_decrypt_psa_error(status);
-    }
-
-    if (mbedtls_pk_get_type(ctx) != MBEDTLS_PK_RSA) {
-        return -1;
-    }
-
-    status = pk_decrypt_import_rsa_key(ctx, &key_id, &der);
-    if (status != PSA_SUCCESS) {
-        return pk_decrypt_psa_error(status);
-    }
-
-    status = psa_asymmetric_decrypt(
-        key_id,
-        PSA_ALG_RSA_PKCS1V15_CRYPT,
-        input,
-        ilen,
-        NULL,
-        0,
-        output,
-        osize,
-        olen
-    );
-
-    if (key_id != PSA_KEY_ID_NULL) {
-        psa_status_t destroy_status = psa_destroy_key(key_id);
-        if (status == PSA_SUCCESS && destroy_status != PSA_SUCCESS) {
-            status = destroy_status;
-        }
-    }
-
-    free(der);
-
-    return pk_decrypt_psa_error(status);
-}
+/*
+ * ============================================================================
+ * 5. Lazy RSA materialization
+ * ============================================================================
+ */
 
 typedef struct mbedtls_v3_shim_pk_rsa_entry {
     mbedtls_pk_context *pk;
@@ -168,14 +47,6 @@ typedef struct mbedtls_v3_shim_pk_rsa_entry {
 } mbedtls_v3_shim_pk_rsa_entry;
 
 static mbedtls_v3_shim_pk_rsa_entry *s_pk_rsa_cache;
-
-/* Declared in rsa.c but not exposed in rsa.h on all TF-PSA-Crypto versions. */
-int mbedtls_rsa_parse_key(mbedtls_rsa_context *rsa,
-                          const unsigned char *key,
-                          size_t keylen);
-int mbedtls_rsa_write_pubkey(const mbedtls_rsa_context *rsa,
-                             unsigned char *start,
-                             unsigned char **p);
 
 static mbedtls_v3_shim_pk_rsa_entry *cache_find(mbedtls_pk_context *pk)
 {
@@ -427,6 +298,27 @@ static void pk_sync_from_rsa(mbedtls_pk_context *pk,
     pk_sync_pubkey_raw_from_rsa(pk, rsa);
 }
 
+/*
+ * If a cache entry still has an empty pub_raw (e.g. the RSA context was
+ * completed via mbedtls_rsa_import()/_complete() after materialization
+ * rather than reparsed), resync it. Shared by mbedtls_pk_write_pubkey_der()
+ * and mbedtls_pk_write_pubkey_pem() below.
+ */
+static void pk_resync_pubkey_raw_if_cached(mbedtls_pk_context *pk)
+{
+    mbedtls_v3_shim_pk_rsa_entry *entry;
+
+    if (!pk_is_rsa(pk)) {
+        return;
+    }
+
+    entry = cache_find(pk);
+    if (entry != NULL && entry->rsa != NULL) {
+        pk->MBEDTLS_PRIVATE(pub_raw_len) = 0;
+        pk_sync_pubkey_raw_from_rsa(pk, entry->rsa);
+    }
+}
+
 void mbedtls_v3_shim_pk_rsa_sync_bits_from_ctx(mbedtls_rsa_context *rsa)
 {
     mbedtls_v3_shim_pk_rsa_entry *entry;
@@ -501,6 +393,97 @@ mbedtls_rsa_context *mbedtls_v3_shim_pk_rsa(mbedtls_pk_context *pk)
     return rsa;
 }
 
+/*
+ * mbedtls_pk_decrypt()/mbedtls_pk_encrypt() were dropped from the pk layer
+ * in v4. Both are implemented here on top of the same materialized RSA
+ * context as the rest of this section, and dispatch to mbedtls_rsa_pkcs1_decrypt()/
+ * mbedtls_rsa_pkcs1_encrypt() - the real v4 padding-aware wrappers, which pick
+ * PKCS#1 v1.5 vs OAEP from the context's configured padding scheme and run on
+ * the legacy (hardware-accelerated, where the target supports it) RSA code
+ * path. PSA is only ever touched once per key, inside mbedtls_v3_shim_pk_rsa()
+ * above, to pull the key out of its PSA slot; every actual encrypt/decrypt
+ * operation after that runs through the legacy math, not psa_asymmetric_*().
+ */
+
+int mbedtls_pk_decrypt_v4_compat(
+    mbedtls_pk_context *ctx,
+    const unsigned char *input,
+    size_t ilen,
+    unsigned char *output,
+    size_t *olen,
+    size_t osize,
+    int (*f_rng)(void *, unsigned char *, size_t),
+    void *p_rng)
+{
+    mbedtls_rsa_context *rsa;
+
+    if (ctx == NULL || input == NULL || output == NULL || olen == NULL) {
+        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+    }
+
+    *olen = 0;
+
+    if (mbedtls_pk_get_type(ctx) != MBEDTLS_PK_RSA) {
+        return MBEDTLS_ERR_PK_TYPE_MISMATCH;
+    }
+
+    rsa = mbedtls_v3_shim_pk_rsa(ctx);
+    if (rsa == NULL) {
+        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+    }
+
+    if (ilen != mbedtls_rsa_get_len(rsa)) {
+        return MBEDTLS_ERR_RSA_BAD_INPUT_DATA;
+    }
+
+    return mbedtls_rsa_pkcs1_decrypt(rsa, f_rng, p_rng, olen, input, output, osize);
+}
+
+int mbedtls_pk_encrypt_v4_compat(
+    mbedtls_pk_context *ctx,
+    const unsigned char *input,
+    size_t ilen,
+    unsigned char *output,
+    size_t *olen,
+    size_t osize,
+    int (*f_rng)(void *, unsigned char *, size_t),
+    void *p_rng)
+{
+    mbedtls_rsa_context *rsa;
+    size_t key_len;
+    int ret;
+
+    if (ctx == NULL || input == NULL || output == NULL || olen == NULL) {
+        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+    }
+
+    *olen = 0;
+
+    if (mbedtls_pk_get_type(ctx) != MBEDTLS_PK_RSA) {
+        return MBEDTLS_ERR_PK_TYPE_MISMATCH;
+    }
+
+    /* Materializes (or reuses the cached) transparent RSA context; works
+     * for both public-only and private+public pk contexts, since encryption
+     * only ever needs the public half (N, E). */
+    rsa = mbedtls_v3_shim_pk_rsa(ctx);
+    if (rsa == NULL) {
+        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+    }
+
+    key_len = mbedtls_rsa_get_len(rsa);
+    if (osize < key_len) {
+        return MBEDTLS_ERR_RSA_OUTPUT_TOO_LARGE;
+    }
+
+    ret = mbedtls_rsa_pkcs1_encrypt(rsa, f_rng, p_rng, ilen, input, output);
+    if (ret == 0) {
+        *olen = key_len;
+    }
+
+    return ret;
+}
+
 void mbedtls_v3_shim_pk_rsa_cache_release(mbedtls_pk_context *pk)
 {
     if (pk != NULL) {
@@ -521,27 +504,31 @@ void mbedtls_v3_shim_pk_free(mbedtls_pk_context *ctx)
 int mbedtls_v3_shim_pk_setup(mbedtls_pk_context *ctx,
                              const mbedtls_pk_info_t *info)
 {
+    int ret;
+
     if (ctx == NULL) {
         return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
     }
 
-    // Check if the caller supplied the dummy v3 compatibility pointer
-    if (info == (const mbedtls_pk_info_t *)1) {
-        // Temporarily bypass macro definition to fetch the real 
-        // underlying v4 info struct mapping out of the core crypto stack
-        #undef mbedtls_pk_info_from_type
-        const mbedtls_pk_info_t *real_v4_info = mbedtls_pk_info_from_type(MBEDTLS_PK_RSA);
-        
-        // Re-establish macro expansion context immediately
-        #define mbedtls_pk_info_from_type(pk_type) mbedtls_pk_info_from_type_shim(pk_type)
+    /*
+     * mbedtls_pk_info_from_type() (pk.h, 4. PSA-Backed Stubs) hands back a
+     * dummy pointer for types v4's info table doesn't cover. Swap it for the
+     * real v4 info struct before calling the real pk_setup below.
+     *
+     * LIMITATION: the dummy pointer doesn't carry the originally requested
+     * pk_type, so this always resolves it as RSA. That matches every known
+     * caller (libssh only ever does this for RSA_ALT-style setup), but a
+     * caller requesting a non-RSA type via the dummy path would misbehave.
+     */
+    if (info == MBEDTLS_V3_SHIM_PK_INFO_DUMMY) {
+        const mbedtls_pk_info_t *real_info = mbedtls_pk_info_from_type(MBEDTLS_PK_RSA);
 
-        if (real_v4_info != NULL && real_v4_info != (const mbedtls_pk_info_t *)1) {
-            info = real_v4_info;
+        if (real_info != NULL && real_info != MBEDTLS_V3_SHIM_PK_INFO_DUMMY) {
+            info = real_info;
         }
     }
 
-    // Execute the real core setup routine using a valid v4 structural descriptor
-    int ret = mbedtls_pk_setup(ctx, info);
+    ret = mbedtls_pk_setup(ctx, info);
 
     if (ret == 0 && mbedtls_pk_get_type(ctx) == MBEDTLS_PK_RSA) {
         if (mbedtls_v3_shim_pk_rsa(ctx) == NULL) {
@@ -553,11 +540,7 @@ int mbedtls_v3_shim_pk_setup(mbedtls_pk_context *ctx,
     return ret;
 }
 
-// Forward declaration of shimmed key exporter
-int mbedtls_rsa_write_key_der(const mbedtls_rsa_context *rsa, 
-                              unsigned char *buf, size_t size);
-
-int mbedtls_v3_shim_pk_write_key_der(const mbedtls_pk_context *ctx, 
+int mbedtls_v3_shim_pk_write_key_der(const mbedtls_pk_context *ctx,
                                      unsigned char *buf, size_t size)
 {
     if (ctx == NULL) {
@@ -565,99 +548,66 @@ int mbedtls_v3_shim_pk_write_key_der(const mbedtls_pk_context *ctx,
     }
 
     // If it's an RSA key and we have a materialized context, write from that
-    if (mbedtls_pk_get_type(ctx) == MBEDTLS_PK_RSA) {
-        mbedtls_v3_shim_pk_rsa_entry *entry = cache_find((mbedtls_pk_context *)ctx);
+    if (pk_is_rsa(ctx)) {
+        mbedtls_v3_shim_pk_rsa_entry *entry = cache_find((mbedtls_pk_context *) ctx);
+
         if (entry != NULL && entry->rsa != NULL) {
             return mbedtls_rsa_write_key_der(entry->rsa, buf, size);
         }
     }
 
     // Otherwise, fall back to native core lookup behavior
-    #undef mbedtls_pk_write_key_der
-    int ret = mbedtls_pk_write_key_der(ctx, buf, size);
-    #define mbedtls_pk_write_key_der(ctx, buf, size) mbedtls_v3_shim_pk_write_key_der((ctx), (buf), (size))
-    return ret;
+    return mbedtls_pk_write_key_der(ctx, buf, size);
+}
+
+int mbedtls_v3_shim_pk_write_pubkey_der(const mbedtls_pk_context *ctx,
+                                        unsigned char *buf, size_t size)
+{
+    if (ctx == NULL) {
+        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+    }
+
+    pk_resync_pubkey_raw_if_cached((mbedtls_pk_context *) ctx);
+
+    return mbedtls_pk_write_pubkey_der(ctx, buf, size);
 }
 
 #if defined(MBEDTLS_PK_WRITE_C) && defined(MBEDTLS_PEM_WRITE_C)
 #include "mbedtls/pem.h"
 
-int mbedtls_v3_shim_pk_write_key_pem(const mbedtls_pk_context *ctx, 
+int mbedtls_v3_shim_pk_write_key_pem(const mbedtls_pk_context *ctx,
                                      unsigned char *buf, size_t size)
 {
-    size_t olene = 0;
     unsigned char der_buf[4096];
-    
+    unsigned char *der_start;
+    size_t der_len;
+    size_t olen;
+    int ret;
+
     // Convert the cached context fields into raw DER bytes first
-    int ret = mbedtls_v3_shim_pk_write_key_der(ctx, der_buf, sizeof(der_buf));
+    ret = mbedtls_v3_shim_pk_write_key_der(ctx, der_buf, sizeof(der_buf));
     if (ret < 0) {
         return ret;
     }
 
-    size_t der_len = (size_t)ret;
-    unsigned char *der_start = der_buf + sizeof(der_buf) - der_len;
+    der_len = (size_t) ret;
+    der_start = der_buf + sizeof(der_buf) - der_len;
 
     // Wrap the output into a standard legacy PEM armor layout block
-    ret = mbedtls_pem_write_buffer("-----BEGIN RSA PRIVATE KEY-----\n",
-                                   "-----END RSA PRIVATE KEY-----\n",
-                                   der_start, der_len, buf, size, &olene);
-    if (ret != 0) {
-        return ret;
-    }
-
-    return 0;
+    return mbedtls_pem_write_buffer("-----BEGIN RSA PRIVATE KEY-----\n",
+                                    "-----END RSA PRIVATE KEY-----\n",
+                                    der_start, der_len, buf, size, &olen);
 }
-#endif
 
-/* 
- * Public key synchronization and export hooks for the shim layer
- */
-
-int mbedtls_v3_shim_pk_write_pubkey_der(const mbedtls_pk_context *ctx, 
+int mbedtls_v3_shim_pk_write_pubkey_pem(const mbedtls_pk_context *ctx,
                                         unsigned char *buf, size_t size)
 {
     if (ctx == NULL) {
         return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
     }
 
-    if (mbedtls_pk_get_type(ctx) == MBEDTLS_PK_RSA) {
-        mbedtls_v3_shim_pk_rsa_entry *entry = cache_find((mbedtls_pk_context *)ctx);
-        if (entry != NULL && entry->rsa != NULL) {
-            /* Force clear internal length guard so sync can update fields seamlessly */
-            ((mbedtls_pk_context *)ctx)->MBEDTLS_PRIVATE(pub_raw_len) = 0;
-            
-            /* Synchronize N and E into the native v4 pub_raw buffer array */
-            pk_sync_pubkey_raw_from_rsa((mbedtls_pk_context *)ctx, entry->rsa);
-        }
-    }
+    pk_resync_pubkey_raw_if_cached((mbedtls_pk_context *) ctx);
 
-    /* Pass execution safely back down into the native core v4 engine */
-    #undef mbedtls_pk_write_pubkey_der
-    int ret = mbedtls_pk_write_pubkey_der(ctx, buf, size);
-    #define mbedtls_pk_write_pubkey_der(ctx, buf, size) mbedtls_v3_shim_pk_write_pubkey_der((ctx), (buf), (size))
-    return ret;
+    return mbedtls_pk_write_pubkey_pem(ctx, buf, size);
 }
-
-#if defined(MBEDTLS_PK_WRITE_C) && defined(MBEDTLS_PEM_WRITE_C)
-int mbedtls_v3_shim_pk_write_pubkey_pem(const mbedtls_pk_context *ctx, 
-                                        unsigned char *buf, size_t size)
-{
-    if (ctx == NULL) {
-        return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
-    }
-
-    /* Sync key matrices before attempting native public PEM transformation layouts */
-    if (mbedtls_pk_get_type(ctx) == MBEDTLS_PK_RSA) {
-        mbedtls_v3_shim_pk_rsa_entry *entry = cache_find((mbedtls_pk_context *)ctx);
-        if (entry != NULL && entry->rsa != NULL) {
-            ((mbedtls_pk_context *)ctx)->MBEDTLS_PRIVATE(pub_raw_len) = 0;
-            pk_sync_pubkey_raw_from_rsa((mbedtls_pk_context *)ctx, entry->rsa);
-        }
-    }
-
-    #undef mbedtls_pk_write_pubkey_pem
-    int ret = mbedtls_pk_write_pubkey_pem(ctx, buf, size);
-    #define mbedtls_pk_write_pubkey_pem(ctx, buf, size) mbedtls_v3_shim_pk_write_pubkey_pem((ctx), (buf), (size))
-    return ret;
-}
-#endif
+#endif /* MBEDTLS_PK_WRITE_C && MBEDTLS_PEM_WRITE_C */
