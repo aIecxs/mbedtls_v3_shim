@@ -133,6 +133,28 @@ The shim intercepts `mbedtls_pk_rsa()` and, on first use, exports the key (DER v
 1. **3DES operations will fail at runtime** - The cipher types are defined but map to `MBEDTLS_CIPHER_NONE`
 2. **RSA cache memory** - Materialized RSA contexts duplicate key material alongside PSA until `mbedtls_pk_free()`
 3. **`mbedtls_pk_ec()` is not materialized** - ECDSA paths that rely on `mbedtls_pk_ec()` may still need a similar bridge
+4. **`mbedtls_pk_setup()`'s dummy-info handling is RSA-only** - a legacy caller that fetches `mbedtls_pk_info_from_type()` for a non-RSA type and feeds it back into `mbedtls_pk_setup()` will be set up as RSA regardless (see 5. Lazy RSA materialization)
+5. **`mbedtls_pk_write_key_pem()`/`mbedtls_pk_write_pubkey_pem()` always emit an RSA PEM header** - both go through the RSA-only materialization path
+6. **`mbedtls_pk_decrypt()`/`mbedtls_pk_encrypt()` are RSA only** - other pk types return `MBEDTLS_ERR_PK_TYPE_MISMATCH`; padding scheme (PKCS#1 v1.5 vs OAEP) follows whatever the materialized RSA context is configured with
+
+
+## Arduino IDE 2.x
+
+The arduino-esp32 core's `platform.txt` lists `{compiler.cpreprocessor.flags}` ahead of local library `{includes}` which can leave `#include_next` with nothing to chain to. Therefore the path is hardcoded in `MBEDTLS_V3_SHIM_REAL_PK_H`. It is overridable at build time from `sketch/build_opt.h` in case a different toolchain lays out headers differently.  
+`{compiler.sdk.path}/{build.memory_type}/include` serves as the entry point, so the path must traverse two levels up:  
+```c
+-DMBEDTLS_V3_SHIM_REAL_PK_H=\"<../../include/mbedtls/mbedtls/tf-psa-crypto/include/mbedtls/pk.h>\"
+```
+
+Download Arduino library [mbedtls_v3_shim.zip](https://aIecxs.github.io/mbedtls_v3_shim/mbedtls_v3_shim.zip)
+
+Install the Library in Arduino IDE 2 -> Menu ->
+Sketch -> Include Library -> Add .ZIP Library... -> [mbedtls_v3_shim.zip](https://aIecxs.github.io/mbedtls_v3_shim/mbedtls_v3_shim.zip)
+
+Add the include in sketch  
+```c
+#include <mbedtls_v3_shim>
+```
 
 ## References
 
