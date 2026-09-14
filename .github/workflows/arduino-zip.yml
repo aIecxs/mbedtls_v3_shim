@@ -32,6 +32,9 @@ jobs:
           rsync -a \
             --exclude='.git/' \
             --exclude='.github/' \
+            --exclude='.gitignore' \
+            --exclude='CMakeLists.txt' \
+            --exclude='site/' \
             ./ "$destdir/"
 
           # Move include/* into src/*.
@@ -39,6 +42,10 @@ jobs:
 
           # Remove the original include directory.
           find "$destdir/include" -delete
+
+          # update version
+          version=$(sed -n '/^version:[[:space:]]*"/{s/^version:[[:space:]]*"\([^"]*\)".*$/\1/p;q;}' "$destdir/idf_component.yml")
+          rm "$destdir/idf_component.yml"
 
           # dummy header
           [ -f "$destdir/src/mbedtls_v3_shim.h" ] || \
@@ -48,7 +55,7 @@ jobs:
           [ -f "$destdir/library.properties" ] || \
           printf '%s\n' \
           'name=mbedtls_v3_shim' \
-          'version=0.1.4' \
+          "version=$version" \
           'author=David Cermak' \
           'maintainer=David Cermak' \
           'sentence=mbedTLS v3 compatibility shim for ESP-IDF v6+ (mbedTLS v4 / PSA)' \

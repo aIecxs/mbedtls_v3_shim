@@ -1,4 +1,4 @@
-version: "0.1.3"
+version: "0.1.4"
 url: https://github.com/david-cermak/mbedtls_v3_shim
 license: Apache-2.0
 description: mbedTLS v3 compatibility shim for ESP-IDF v6+ (mbedTLS v4 / PSA)

@@ -146,12 +146,14 @@ The arduino-esp32 core's `platform.txt` lists `{compiler.cpreprocessor.flags}` a
 -DMBEDTLS_V3_SHIM_REAL_PK_H=\"<../../include/mbedtls/mbedtls/tf-psa-crypto/include/mbedtls/pk.h>\"
 ```
 
-Download Arduino library [mbedtls_v3_shim.zip](https://aIecxs.github.io/mbedtls_v3_shim/mbedtls_v3_shim.zip)
+#### Installation
 
-Install the Library in Arduino IDE 2 -> Menu ->
-Sketch -> Include Library -> Add .ZIP Library... -> [mbedtls_v3_shim.zip](https://aIecxs.github.io/mbedtls_v3_shim/mbedtls_v3_shim.zip)
+1. Download Arduino library [mbedtls_v3_shim.zip](https://david-cermak.github.io/mbedtls_v3_shim/mbedtls_v3_shim.zip)
 
-Add the include in sketch  
+2. Install the Library in Arduino IDE 2 -> Menu ->  
+Sketch -> Include Library -> Add .ZIP Library... -> [mbedtls_v3_shim.zip](https://david-cermak.github.io/mbedtls_v3_shim/mbedtls_v3_shim.zip)
+
+3. Add the include in sketch  
 ```c
 #include <mbedtls_v3_shim>
 ```

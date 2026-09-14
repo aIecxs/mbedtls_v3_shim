@@ -56,3 +56,6 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# GitHub Pages build output
+/site/
